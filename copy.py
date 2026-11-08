@@ -5,6 +5,7 @@ import pygame
 import math
 pygame.init()
 
+
 try:
     pygame.mixer.init()
 except pygame.error:
@@ -120,6 +121,8 @@ current_level = 1
 current_page = "menu"
 running = True
 show_level_popup = False
+show_back_confirm = False
+back_confirm_opened_at = 0
 
 TILE_FILES = [
     "tile_strawberry.png",
@@ -250,6 +253,9 @@ level_map_image = load_image(
     os.path.join(IMAGES_DIR, "level_map.png")
 )
 
+# Tile Club logo shown above the PLAY button on the main menu.
+logo_image = load_image(os.path.join(IMAGES_DIR, "tile_club_logo.png"))
+
 card_back = load_image(
     os.path.join(TILES_DIR, "card_back.png")
 )
@@ -261,11 +267,24 @@ button_images = {
     "settings": load_image(
         os.path.join(BUTTONS_DIR, "button_settings.png")
     ),
+    "stats": load_image(
+        os.path.join(BUTTONS_DIR, "button_stats.png")
+    ),
+    "shop": load_image(
+        os.path.join(BUTTONS_DIR, "button_shop.png")
+    ),
+    "levels": load_image(
+        os.path.join(BUTTONS_DIR, "button_levels.png")
+    ),
     "restart": load_image(
         os.path.join(BUTTONS_DIR, "button_restart.png")
     ),
-    "back": load_image(
-        os.path.join(BUTTONS_DIR, "button_back.png")
+    "back": (
+        load_image(os.path.join(BUTTONS_DIR, "button_back.png"))
+    ),
+    "exit": (
+        load_image(os.path.join(BUTTONS_DIR, "button_exit.png"))
+        or load_image(os.path.join(BASE_DIR, "button_exit.png"))
     ),
 }
 
@@ -372,24 +391,81 @@ play_rect = pygame.Rect(
     play_height,
 )
 
-levels_menu_rect = pygame.Rect(
-    (WIDTH - min(scaled(270), int(WIDTH * 0.65))) // 2,
-    play_rect.bottom + scaled(18),
-    min(scaled(270), int(WIDTH * 0.65)),
-    scaled(48),
+menu_row_gap = scaled(12)
+menu_side_margin = scaled(22)
+
+# Four matching image buttons across the bottom, like the reference design.
+menu_button_width = max(
+    scaled(90),
+    min(scaled(205), (WIDTH - 2 * menu_side_margin - 3 * menu_row_gap) // 4),
 )
+menu_button_height = max(
+    scaled(48),
+    min(scaled(76), int(HEIGHT * 0.12)),
+)
+
+# Main PLAY button sits below the Tile Club logo.
+play_rect.y = int(HEIGHT * 0.49)
+play_rect.centerx = WIDTH // 2
+
+# The logo is drawn independently so PLAY remains a real clickable button.
+logo_rect = pygame.Rect(0, 0, 1, 1)
+if logo_image:
+    logo_ratio = logo_image.get_width() / max(1, logo_image.get_height())
+    logo_width = min(int(WIDTH * 0.76), scaled(430))
+    logo_height = max(1, int(logo_width / logo_ratio))
+    max_logo_height = int(HEIGHT * 0.25)
+    if logo_height > max_logo_height:
+        logo_height = max_logo_height
+        logo_width = max(1, int(logo_height * logo_ratio))
+    logo_rect = pygame.Rect(0, 0, logo_width, logo_height)
+    logo_rect.centerx = WIDTH // 2
+    logo_rect.centery = int(HEIGHT * 0.30)
+
+menu_row_width = menu_button_width * 4 + menu_row_gap * 3
+menu_row_x = (WIDTH - menu_row_width) // 2
+menu_row_y = min(
+    HEIGHT - menu_button_height - scaled(24),
+    int(HEIGHT * 0.80),
+)
+
+levels_menu_rect = pygame.Rect(
+    menu_row_x,
+    menu_row_y,
+    menu_button_width,
+    menu_button_height,
+)
+settings_rect = pygame.Rect(
+    levels_menu_rect.right + menu_row_gap,
+    menu_row_y,
+    menu_button_width,
+    menu_button_height,
+)
+menu_stats_rect = pygame.Rect(
+    settings_rect.right + menu_row_gap,
+    menu_row_y,
+    menu_button_width,
+    menu_button_height,
+)
+menu_shop_rect = pygame.Rect(
+    menu_stats_rect.right + menu_row_gap,
+    menu_row_y,
+    menu_button_width,
+    menu_button_height,
+)
+
+stats_back_rect = pygame.Rect(
+    scaled(12),
+    scaled(12),
+    scaled(105),
+    scaled(42),
+)
+shop_back_rect = stats_back_rect.copy()
 
 exit_menu_rect = pygame.Rect(
     scaled(14),
     scaled(14),
     scaled(82),
-    scaled(36),
-)
-
-settings_rect = pygame.Rect(
-    WIDTH - scaled(146),
-    scaled(14),
-    scaled(132),
     scaled(36),
 )
 
@@ -418,10 +494,10 @@ music_toggle_rect = pygame.Rect(
 )
 
 map_back_rect = pygame.Rect(
-    scaled(14),
-    scaled(14),
-    scaled(100),
-    scaled(42),
+    scaled(10),
+    scaled(8),
+    scaled(78),
+    scaled(32),
 )
 
 map_title_y = scaled(48)
@@ -466,6 +542,20 @@ lose_map_rect = pygame.Rect(
     HEIGHT // 2 + scaled(72),
     scaled(200),
     scaled(46),
+)
+
+continue_game_rect = pygame.Rect(
+    WIDTH // 2 - scaled(105),
+    HEIGHT // 2 + scaled(18),
+    scaled(210),
+    scaled(44),
+)
+
+confirm_back_rect = pygame.Rect(
+    WIDTH // 2 - scaled(105),
+    HEIGHT // 2 + scaled(70),
+    scaled(210),
+    scaled(44),
 )
 
 moves = 0
@@ -567,10 +657,24 @@ def draw_button(rect, text, color, font=None, image_key=None):
     image = button_images.get(image_key) if image_key else None
 
     if image:
-        resized = pygame.transform.smoothscale(
-            image, (rect.width, rect.height)
-        )
-        screen.blit(resized, rect)
+        if image_key in ("back", "exit"):
+            image_width, image_height = image.get_size()
+            fit_scale = min(
+                rect.width / image_width,
+                rect.height / image_height,
+            )
+            draw_size = (
+                max(1, int(image_width * fit_scale)),
+                max(1, int(image_height * fit_scale)),
+            )
+            resized = pygame.transform.smoothscale(image, draw_size)
+            image_rect = resized.get_rect(center=rect.center)
+            screen.blit(resized, image_rect)
+        else:
+            resized = pygame.transform.smoothscale(
+                image, (rect.width, rect.height)
+            )
+            screen.blit(resized, rect)
     else:
         pygame.draw.rect(
             screen,
@@ -664,13 +768,15 @@ def draw_map():
         draw_background()
         screen.blit(overlay, (0, 0))
 
-    # Top HUD: circular home button and readable coin/heart counters.
-    home_center = map_back_rect.center
-    home_radius = scaled(25)
-    if "home" in icon_images:
-        draw_circle_button(screen, home_center, home_radius, "home")
-    else:
-        draw_button(map_back_rect, "BACK", DARK_PURPLE, font=FONT_SMALL, image_key="back")
+    # Use the existing Back PNG, just like the Game scene.
+    # Draw it once and keep the existing map_back_rect click handler.
+    draw_button(
+        map_back_rect,
+        "",
+        DARK_PURPLE,
+        font=FONT_SMALL,
+        image_key="back",
+    )
 
     draw_text("LEVEL MAP", get_font(30, True), GOLD, (WIDTH // 2, scaled(40)))
 
@@ -1144,42 +1250,118 @@ def draw_menu():
     draw_background()
     screen.blit(overlay, (0, 0))
 
-
     draw_button(
         exit_menu_rect,
-        "EXIT",
+        "",
         DARK_PURPLE,
         font=FONT_SMALL,
+        image_key="exit",
     )
 
-    draw_button(
-        settings_rect,
-        "SETTINGS",
-        DARK_PURPLE,
-        font=FONT_SMALL,
-        image_key="settings",
-    )
+    if logo_image:
+        fitted_logo = pygame.transform.smoothscale(logo_image, logo_rect.size)
+        screen.blit(fitted_logo, logo_rect)
+    else:
+        # Text fallback if the logo PNG is missing.
+        draw_text("TILE CLUB", get_font(42, True), GOLD,
+                  (WIDTH // 2, int(HEIGHT * 0.22)))
 
     draw_button(
         play_rect,
-        "START",
+        "PLAY",
         PURPLE,
         font=FONT_LARGE,
         image_key="play",
     )
 
+    # Bottom navigation order matches the supplied reference image.
     draw_button(
-        levels_menu_rect,
-        "LEVELS",
-        DARK_PURPLE,
-        font=FONT_MEDIUM,
+        levels_menu_rect, "", DARK_PURPLE,
+        font=FONT_SMALL, image_key="levels",
+    )
+    draw_button(
+        settings_rect, "", DARK_PURPLE,
+        font=FONT_SMALL, image_key="settings",
+    )
+    draw_button(
+        menu_stats_rect, "", DARK_PURPLE,
+        font=FONT_SMALL, image_key="stats",
+    )
+    draw_button(
+        menu_shop_rect, "", DARK_PURPLE,
+        font=FONT_SMALL, image_key="shop",
     )
 
     draw_text(
         f"Level {get_current_unlocked_level()} unlocked",
         FONT_SMALL,
         WHITE,
-        (WIDTH // 2, levels_menu_rect.bottom + scaled(25)),
+        (WIDTH // 2, min(play_rect.bottom + scaled(16), menu_row_y - scaled(18))),
+    )
+
+
+def draw_stats():
+    draw_background()
+    screen.blit(overlay, (0, 0))
+
+    draw_button(stats_back_rect, "BACK", DARK_PURPLE, font=FONT_SMALL)
+    draw_text("YOUR STATS", FONT_TITLE, GOLD, (WIDTH // 2, int(HEIGHT * 0.20)))
+
+    total_stars = sum(get_stars(level) for level in range(1, TOTAL_LEVELS + 1))
+    completed_levels = sum(
+        1 for level in range(1, TOTAL_LEVELS + 1) if get_stars(level) > 0
+    )
+    best_moves_count = len(progress.get("best_moves", {}))
+
+    stats = [
+        ("LEVEL UNLOCKED", str(get_current_unlocked_level())),
+        ("LEVELS COMPLETED", f"{completed_levels} / {TOTAL_LEVELS}"),
+        ("TOTAL STARS", f"{total_stars} / {TOTAL_LEVELS * 3}"),
+        ("BEST-MOVE RECORDS", str(best_moves_count)),
+        ("COINS", str(progress.get("coins", 0))),
+    ]
+
+    card_w = min(int(WIDTH * 0.72), scaled(480))
+    card_h = max(scaled(42), min(scaled(58), int(HEIGHT * 0.085)))
+    gap = scaled(10)
+    total_h = len(stats) * card_h + (len(stats) - 1) * gap
+    y = max(int(HEIGHT * 0.30), (HEIGHT - total_h) // 2)
+
+    for label, value in stats:
+        rect = pygame.Rect((WIDTH - card_w) // 2, y, card_w, card_h)
+        draw_button(rect, f"{label}:  {value}", DARK_PURPLE, font=FONT_SMALL)
+        y += card_h + gap
+
+
+def draw_shop():
+    draw_background()
+    screen.blit(overlay, (0, 0))
+
+    draw_button(shop_back_rect, "BACK", DARK_PURPLE, font=FONT_SMALL)
+    draw_text("SHOP", FONT_TITLE, GOLD, (WIDTH // 2, int(HEIGHT * 0.20)))
+    draw_text(
+        f"YOUR COINS: {progress.get('coins', 0)}",
+        FONT_MEDIUM,
+        WHITE,
+        (WIDTH // 2, int(HEIGHT * 0.31)),
+    )
+
+    # The shop screen is ready for future purchasable items; it does not
+    # deduct coins or pretend to sell items that have not been implemented.
+    card_w = min(int(WIDTH * 0.72), scaled(440))
+    card_h = max(scaled(74), min(scaled(110), int(HEIGHT * 0.16)))
+    item_rect = pygame.Rect(
+        (WIDTH - card_w) // 2,
+        int(HEIGHT * 0.42),
+        card_w,
+        card_h,
+    )
+    draw_button(item_rect, "MORE ITEMS COMING SOON", DARK_PURPLE, font=FONT_MEDIUM)
+    draw_text(
+        "Your coins are safe. Items can be added next.",
+        FONT_SMALL,
+        WHITE,
+        (WIDTH // 2, item_rect.bottom + scaled(24)),
     )
 
 
@@ -1271,6 +1453,76 @@ def draw_settings():
     )
 
 
+def load_confirm_popup_image():
+    candidates = [
+        os.path.join(BASE_DIR, "assets", "images", "confirm_leave_level.png"),
+        os.path.join(BASE_DIR, "assets", "buttons", "confirm_leave_level.png"),
+        os.path.join(BASE_DIR, "confirm_leave_level.png"),
+    ]
+    for candidate in candidates:
+        try:
+            return pygame.image.load(candidate).convert_alpha()
+        except (pygame.error, FileNotFoundError):
+            continue
+    return None
+
+
+confirm_popup_image = load_confirm_popup_image()
+
+
+def draw_back_confirm_popup():
+    screen.blit(overlay, (0, 0))
+
+    panel_width = min(WIDTH - scaled(20), scaled(900))
+    panel_height = min(HEIGHT - scaled(20), scaled(510))
+    panel = pygame.Rect(
+        (WIDTH - panel_width) // 2,
+        (HEIGHT - panel_height) // 2,
+        panel_width,
+        panel_height,
+    )
+
+    if confirm_popup_image is not None:
+        fitted = pygame.transform.smoothscale(confirm_popup_image, panel.size)
+        screen.blit(fitted, panel.topleft)
+    else:
+        pygame.draw.rect(screen, DARK_PURPLE, panel, border_radius=scaled(22))
+        pygame.draw.rect(
+            screen, GOLD, panel, width=max(1, scaled(3)),
+            border_radius=scaled(22),
+        )
+        draw_text(
+            "LEAVE THIS LEVEL?",
+            get_font(25, True),
+            GOLD,
+            (panel.centerx, panel.y + scaled(48)),
+        )
+        draw_text(
+            "Your game progress in this round will be lost.",
+            get_font(13),
+            WHITE,
+            (panel.centerx, panel.y + scaled(88)),
+        )
+
+    # Interactive hit areas align with the two illustrated buttons.
+    button_y = panel.y + int(panel_height * 0.72)
+    button_w = int(panel_width * 0.36)
+    button_h = int(panel_height * 0.22)
+    continue_game_rect.update(
+        panel.x + int(panel_width * 0.12),
+        button_y - button_h // 2,
+        button_w,
+        button_h,
+    )
+    confirm_back_rect.update(
+        panel.x + int(panel_width * 0.52),
+        button_y - button_h // 2,
+        button_w,
+        button_h,
+    )
+
+
+
 def draw_game():
     draw_background()
 
@@ -1358,6 +1610,9 @@ def draw_game():
         draw_win_popup()
     elif game_lost:
         draw_lose_popup()
+
+    if show_back_confirm:
+        draw_back_confirm_popup()
 
 
 def toggle_music():
@@ -1456,11 +1711,18 @@ def start_level(level):
 
 
 def handle_click(position):
-    global current_page
+    global current_page, show_back_confirm, back_confirm_opened_at
+    global game_start_ticks, match_time
 
     if current_page == "menu":
         if play_rect.collidepoint(position):
             start_level(get_current_unlocked_level())
+
+        elif menu_stats_rect.collidepoint(position):
+            current_page = "stats"
+
+        elif menu_shop_rect.collidepoint(position):
+            current_page = "shop"
 
         elif levels_menu_rect.collidepoint(position):
             current_page = "map"
@@ -1493,6 +1755,14 @@ def handle_click(position):
 
                 return None
 
+    elif current_page == "stats":
+        if stats_back_rect.collidepoint(position):
+            current_page = "menu"
+
+    elif current_page == "shop":
+        if shop_back_rect.collidepoint(position):
+            current_page = "menu"
+
     elif current_page == "settings":
         if back_settings_rect.collidepoint(position):
             current_page = "menu"
@@ -1507,6 +1777,20 @@ def handle_click(position):
             update_volume(position[0])
 
     elif current_page == "game":
+        if show_back_confirm:
+            if continue_game_rect.collidepoint(position):
+                paused_for = pygame.time.get_ticks() - back_confirm_opened_at
+                game_start_ticks += paused_for
+                if second_card is not None:
+                    match_time += paused_for
+                show_back_confirm = False
+
+            elif confirm_back_rect.collidepoint(position):
+                show_back_confirm = False
+                current_page = "map"
+
+            return None
+
         if game_won:
             if win_restart_rect.collidepoint(position):
                 restart_game()
@@ -1531,7 +1815,8 @@ def handle_click(position):
             restart_game()
 
         elif game_back_rect.collidepoint(position):
-            current_page = "map"
+            show_back_confirm = True
+            back_confirm_opened_at = pygame.time.get_ticks()
 
         else:
             handle_card_click(position)
@@ -1549,6 +1834,7 @@ while running:
 
     if (
         current_page == "game"
+        and not show_back_confirm
         and not game_won
         and not game_lost
         and get_time_left() <= 0
@@ -1559,7 +1845,8 @@ while running:
         save_progress()
 
     if (
-        second_card is not None
+        not show_back_confirm
+        and second_card is not None
         and now - match_time >= 800
     ):
         revealed.discard(first_card)
@@ -1637,6 +1924,10 @@ while running:
 
     if current_page == "menu":
         draw_menu()
+    elif current_page == "stats":
+        draw_stats()
+    elif current_page == "shop":
+        draw_shop()
     elif current_page == "map":
         draw_map()
     elif current_page == "settings":
